@@ -1,0 +1,364 @@
+---
+title: "Predicting customers that might default the credit payment in the next month"
+author: "Kalpa Subbaiah,Supratim Chaudhuri,Sasi Kumar"
+date: "18 August 2017"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+**NOTE** clear the environment
+
+```{r}
+rm(list = ls(all=TRUE))
+
+```
+
+# Reading & Understanding the Data
+
+* The data depicts the cases of customers' default payments in Taiwan. Given the general information, past payment history and bill history of customers, the task is to predict customers that might default the credit payment in the next month
+
+* The dataset has 30000 rows and 25 columns. 
+
+* The column/variable names' explanation is given below:
+
+1) __LIMIT_BAL:__ Amount of the given credit (NT dollar): it includes both the individual consumer credit and his/her family (supplementary) credit. 
+
+2) __SEX :__ Gender (1 = male; 2 = female). 
+
+3) __EDUCATION :__ Education (1 = graduate school; 2 = university; 3 = high school; 4 = others). 
+
+4) __MARRIAGE :___ Marital status (1 = married; 2 = single; 3 = others).
+
+5) __AGE :__ Age (year). 
+
+6) __PAY_0 to PAY_6 :__ History of past payment.
+
+7) __BILL_AMT1 to BILL_AMT6 :__ Amount of bill statement (NT dollar).
+
+8) __PAY_AMT1 to PAY_AMT6 :__  Amount of previous payment (NT dollar).
+
+9) __default.payment.next.month :__ Target variable (0 or 1- will the customer make the credit payment next month or not)
+
+```{r}
+setwd("C:/insofe\\cute_2\\final")
+getwd()
+defaulters_data <- read.csv("CreditCard_Defaulters.csv", header=T)
+names(defaulters_data)
+```
+
+* Using the str() and summary() function to get a feel for the dataset.
+
+```{r}
+str(defaulters_data)
+summary(defaulters_data)
+```
+
+* Take a look at the data using the "head()" and "tail()" functions
+
+```{r}
+head(defaulters_data)
+tail(defaulters_data)
+```
+
+# Data Pre-processing
+* Are there any missing values in the dataset?
+
+```{r}
+sum(is.na(defaulters_data))
+```
+
+* Change the data types of columns sex,education,marriage and default payment to factors
+
+```{r}
+cat_var= c("SEX","EDUCATION","MARRIAGE","PAY_0","PAY_2","PAY_3","PAY_4","PAY_5","PAY_6","default.payment.next.month")
+num_var= setdiff(names(defaulters_data),cat_var)
+defaulters_data[,cat_var]= data.frame(apply(defaulters_data[,cat_var],2,function(x) as.factor(as.character(x))))
+defaulters_data[,num_var]= data.frame(apply(defaulters_data[,num_var],2,function(x) as.numeric((x))))
+str(defaulters_data)
+```
+
+* Remove the ID column as it is not required
+
+```{r}
+defaulters_data=defaulters_data[,!names(defaulters_data)%in% "ï..ID" ]
+str(defaulters_data)
+```
+* Understand the data using plots
+
+```{r}
+names(defaulters_data)
+par(mfrow = c(2,2))
+
+plot(defaulters_data[,"MARRIAGE"],defaulters_data[,"PAY_AMT6"],xlab="MARRIAGE",ylab="PAY_AMT6",type="p",main="MARRIAGE and PAY_AMT6 plot" )
+plot(defaulters_data[,"SEX"],defaulters_data[,"PAY_AMT6"],xlab="SEX",ylab="PAY_AMT6",type="p",main="SEX and PAY_AMT6 plot" )
+plot(defaulters_data[,"EDUCATION"],defaulters_data[,"PAY_AMT6"],xlab="EDUCATION",ylab="PAY_AMT6",type="p",main="EDUCATION and PAY_AMT6 plot" )
+plot(defaulters_data[,"AGE"],defaulters_data[,"PAY_AMT6"],xlab="AGE",ylab="PAY_AMT6",type="p",main="AGE and PAY_AMT6 plot" )
+```
+
+* Verify the corelation between the attributes
+
+```{r}
+library(corrplot)
+num_var_new=setdiff(num_var,c("ï..ID"))
+corrplot(cor(defaulters_data[,num_var_new]), method="number")
+```
+
+* check for class imbalance
+
+```{r}
+prop.table(table(defaulters_data$default.payment.next.month))
+library("ROSE")
+defaulters_data <- ROSE(default.payment.next.month ~ ., data=defaulters_data, seed=111)$data
+prop.table(table(defaulters_data$default.payment.next.month))
+```
+
+* Standardize the data
+
+```{r}
+library(vegan)
+num_var_new=setdiff(num_var,c("ï..ID"))
+defaulters_data[,num_var_new]=as.data.frame(apply(defaulters_data[,num_var_new],2,function(x) scale(x,center = T,scale = T)))
+```
+
+* PCA on numerical attributes since there is high corelation and many features
+
+```{r}
+defaulters_data_pca<-princomp(x = defaulters_data[,num_var_new],scores = T)
+summary(defaulters_data_pca)
+plot(defaulters_data_pca)
+screeplot(defaulters_data_pca,type= "lines")
+defaulters_data=cbind(defaulters_data_pca$scores,defaulters_data[,cat_var])
+names(defaulters_data)
+```
+
+We see that 89.6% of the total variance in the features is explained by the first 9 principal components. Hence, we choose first 9 components for the model.
+
+```{r}
+defaulters_data<-defaulters_data[,-c(10:14)]
+names(defaulters_data)
+```
+
+## Train/Test Split
+* Split the data 70/30 into train and test sets, using __Stratified Sampling__ by setting the seed as "111" 
+
+```{r}
+set.seed(111)
+library(caret)
+train_rows <- createDataPartition(defaulters_data$default.payment.next.month, p = 0.7, list = F)
+trainP_data <- defaulters_data[train_rows, ]
+testP_data <- defaulters_data[-train_rows, ]
+summary(trainP_data)
+summary(testP_data)
+str(testP_data)
+prop.table(table(trainP_data$default.payment.next.month))
+prop.table(table(testP_data$default.payment.next.month))
+```
+
+# Building a model
+##Logistic Regression Model
+
+```{r}
+
+log_model = glm(default.payment.next.month~., data =trainP_data, family = binomial)
+
+library(e1071)
+nb_model <- naiveBayes(default.payment.next.month~.,data = trainP_data)
+```
+
+* summary of the model 
+
+```{r}
+summary(log_model)
+
+```
+
+* Improving the model using stepAIC.
+
+```{r}
+library(MASS)
+log_model_step = stepAIC(log_model)
+
+#stepAIC improves the AIC value
+```
+
+*find any multi-collinearity
+
+```{r}
+library(car)
+
+log_model_vif = vif(log_model)
+log_model_vif
+
+log_model_step_vif = vif(log_model_step)
+log_model_step_vif
+
+```
+
+* Check the model summary to check for any insignificant variables
+
+```{r}
+summary(log_model_step)
+
+#Since AIC value is less, we choose 'log_model_step' as our final model
+```
+
+## Creating an ROC Curve
+
+1) predictions (probability scores) using the predict() function
+
+```{r}
+
+prob_train_model <- predict(log_model, type = "response")
+prob_train_step <- predict(log_model_step, type = "response")
+
+```
+
+2)creating a "prediction()" object using ROCR curve
+
+```{r}
+library(ROCR)
+
+pred_model <- prediction(prob_train_model, trainP_data$default.payment.next.month)
+pred_step <- prediction(prob_train_step, trainP_data$default.payment.next.month)
+
+```
+
+3) Extracting performance measures (True Positive Rate and False Positive Rate) using the "performance()" function from the ROCR package
+
+```{r}
+
+perf_model <- performance(pred_model, measure="tpr", x.measure="fpr")
+perf_model_step <- performance(pred_step, measure="tpr", x.measure="fpr")
+
+```
+
+4) Plotting the ROC curve using the extracted performance measures (TPR and FPR)
+
+```{r}
+par(mfrow = c(1,2))
+plot(perf_model, col=rainbow(10), colorize=T, print.cutoffs.at=seq(0,1,0.05))
+plot(perf_model_step, col=rainbow(10), colorize=T, print.cutoffs.at=seq(0,1,0.05))
+
+```
+
+* Extracting the AUC score of the ROC curve and store it in a variable named "auc"
+
+```{r}
+
+perf_auc_model <- performance(pred_model, measure="auc")
+
+auc_model <- perf_auc_model@y.values[[1]]
+
+print(auc_model)
+
+perf_auc_step <- performance(pred_step, measure="auc")
+
+auc_step <- perf_auc_step@y.values[[1]]
+
+print(auc_step)
+
+
+```
+
+## Choosing a Cutoff Value
+
+* Based on the trade off between TPR and FPR depending on the business domain, a call on the cutoff is made.
+
+```{r}
+
+pred_class_model <- ifelse(prob_train_model> 0.35,"1","0")
+table(trainP_data$default.payment.next.month,pred_class_model) 
+
+# A cutoff of 0.35 seems reasonable
+
+pred_class_step <- ifelse(prob_train_step> 0.35,"1","0")
+table(trainP_data$default.payment.next.month,pred_class_step) 
+
+
+```
+
+## Predictions on test data
+
+* After choosing a cutoff value, predicting the class labels on the test data using our glm and stepaic model
+
+```{r}
+
+prob_test_model <- predict(log_model, testP_data, type = "response")
+
+preds_test_model <- ifelse(prob_test_model > 0.35,"1","0")
+
+confm_model= table(testP_data$default.payment.next.month,preds_test_model)
+confm_model
+
+prob_test_step <- predict(log_model_step, testP_data, type = "response")
+
+preds_test_step <- ifelse(prob_test_step > 0.35,"1","0")
+
+confm_model_step= table(testP_data$default.payment.next.month,preds_test_step)
+confm_model_step
+
+
+
+pred_nb <- predict(nb_model, testP_data)
+confm_model_nb = table(testP_data$default.payment.next.month,pred_nb)
+
+```
+
+# Evaluation Metrics for classification
+
+## Automated Computation through Caret
+
+* Using the caret package to compute the evaluation metrics
+
+```{r}
+library(e1071)
+conf_model = confusionMatrix(preds_test_model, testP_data$default.payment.next.month, positive = "1")
+conf_model
+conf_step = confusionMatrix(preds_test_step, testP_data$default.payment.next.month, positive = "1")
+conf_step
+conf_nb = confusionMatrix(pred_nb, testP_data$default.payment.next.month, positive = "1")
+conf_nb
+```
+
+# Finding the F1 score since it is very important to have high precision and recall for this problem
+# Print F1 score
+
+```{r}
+
+F1_score<-function(Recall, Precision)   {
+     F1<-2*Recall*Precision/(Recall+Precision)
+     return(F1)
+}
+
+recall_model_step =  confm_model_step[2, 2]/sum(confm_model_step[2, ])
+recall_model =  confm_model[2, 2]/sum(confm_model[2, ])
+recall_model_nb =  confm_model_nb[2, 2]/sum(confm_model_nb[2, ])
+
+
+precision_model_step =  confm_model_step[2, 2]/sum(confm_model_step[,2 ])
+precision_model =  confm_model[2, 2]/sum(confm_model[,2 ])
+precision_model_nb =  confm_model_nb[2, 2]/sum(confm_model_nb[,2 ])
+
+
+F1_model_step<-F1_score(recall_model_step,precision_model_step)
+F1_model<-F1_score(recall_model,precision_model)
+F1_model_nb<-F1_score(recall_model_nb,precision_model_nb)
+
+print(F1_model_step)
+print(F1_model)
+print(F1_model_nb)
+```
+
+
+
+
+
+
+
+
+
+
+
